@@ -9,112 +9,6 @@
 # that build i3-ipc.
 #
 
-require 'eventmachine'
-
-module I3
-  module Subscription
-    extend self
-
-    class SubscriptionConnection < EM::Connection
-      def self.connect(subscription_list, socket_path=I3::IPC::SOCKET_PATH, &blk)
-        new_klass = Class.new(self)
-        new_klass.send(:define_method, :initialize) do
-          @subscription_list = subscription_list
-          @handler = blk
-        end
-        EM.connect socket_path, new_klass
-      end
-
-      def post_init
-        send_data I3::IPC.format(I3::IPC::MESSAGE_TYPE_SUBSCRIBE,
-                                 @subscription_list.to_json)
-      end
-
-      def receive_data(data)
-        @handler.call(self, *I3::IPC.parse_response(data)) if @handler
-      end
-    end
-
-    def subscribe(subscription_list, socket_path=I3::IPC::SOCKET_PATH, &blk)
-      EM.run do
-        SubscriptionConnection.connect(subscription_list,
-                                       socket_path, &blk)
-      end
-    end
-  end
-end
-module I3
-  module Manpage
-    extend self
-
-    def display(name)
-      puts manpage(name)
-    end
-
-    def manpage(name)
-      return "** Can't find groff(1)" unless groff?
-
-      require 'open3'
-      out = nil
-      Open3.popen3(groff_command) do |stdin, stdout, _|
-        stdin.puts raw_manpage(name)
-        stdin.close
-        out = stdout.read.strip
-      end
-      out
-    end
-
-    def raw_manpage(name)
-      if File.exists? file = File.dirname(__FILE__) + "/../../man/#{name}.1"
-        File.read(file)
-      else
-        DATA.read
-      end
-    end
-
-    def groff?
-      system("which groff > /dev/null")
-    end
-
-    def groff_command
-      "groff -Wall -mtty-char -mandoc -Tascii"
-    end
-
-    def puts(*args)
-      page_stdout
-      super
-    end
-
-    def page_stdout
-      return unless $stdout.tty?
-
-      read, write = IO.pipe
-
-      if Kernel.fork
-        $stdin.reopen(read)
-        read.close
-        write.close
-
-        ENV['LESS'] = 'FSRX'
-
-        Kernel.select [STDIN]
-
-        pager = ENV['PAGER'] || 'less -isr'
-        pager = 'cat' if pager.empty?
-
-        exec pager rescue exec "/bin/sh", "-c", pager
-      else
-        $stdout.reopen(write)
-        $stderr.reopen(write) if $stderr.tty?
-        read.close
-        write.close
-      end
-    end
-  end
-end
-module I3
-  Version = '0.1.4'
-end
 require 'optparse'
 require 'pp'
 
@@ -205,8 +99,116 @@ module I3
         subscribe socket_file, output
       when I3::IPC::MESSAGE_TYPE_GET_OUTPUTS
         format_output s.get_outputs, output
+      when I3::IPC::MESSAGE_TYPE_GET_TREE
+        format_output s.get_tree, output
       else
         abort "error: type #{type} not yet implemented"
+      end
+    end
+  end
+end
+require 'eventmachine'
+
+module I3
+  module Subscription
+    extend self
+
+    class SubscriptionConnection < EM::Connection
+      def self.connect(subscription_list, socket_path=I3::IPC::SOCKET_PATH, &blk)
+        new_klass = Class.new(self)
+        new_klass.send(:define_method, :initialize) do
+          @subscription_list = subscription_list
+          @handler = blk
+        end
+        EM.connect socket_path, new_klass
+      end
+
+      def post_init
+        send_data I3::IPC.format(I3::IPC::MESSAGE_TYPE_SUBSCRIBE,
+                                 @subscription_list.to_json)
+      end
+
+      def receive_data(data)
+        @handler.call(self, *I3::IPC.parse_response(data)) if @handler
+      end
+    end
+
+    def subscribe(subscription_list, socket_path=I3::IPC::SOCKET_PATH, &blk)
+      EM.run do
+        SubscriptionConnection.connect(subscription_list,
+                                       socket_path, &blk)
+      end
+    end
+  end
+end
+module I3
+  Version = '0.1.4'
+end
+module I3
+  module Manpage
+    extend self
+
+    def display(name)
+      puts manpage(name)
+    end
+
+    def manpage(name)
+      return "** Can't find groff(1)" unless groff?
+
+      require 'open3'
+      out = nil
+      Open3.popen3(groff_command) do |stdin, stdout, _|
+        stdin.puts raw_manpage(name)
+        stdin.close
+        out = stdout.read.strip
+      end
+      out
+    end
+
+    def raw_manpage(name)
+      if File.exists? file = File.dirname(__FILE__) + "/../../man/#{name}.1"
+        File.read(file)
+      else
+        DATA.read
+      end
+    end
+
+    def groff?
+      system("which groff > /dev/null")
+    end
+
+    def groff_command
+      "groff -Wall -mtty-char -mandoc -Tascii"
+    end
+
+    def puts(*args)
+      page_stdout
+      super
+    end
+
+    def page_stdout
+      return unless $stdout.tty?
+
+      read, write = IO.pipe
+
+      if Kernel.fork
+        $stdin.reopen(read)
+        read.close
+        write.close
+
+        ENV['LESS'] = 'FSRX'
+
+        Kernel.select [STDIN]
+
+        pager = ENV['PAGER'] || 'less -isr'
+        pager = 'cat' if pager.empty?
+
+        exec pager rescue exec "/bin/sh", "-c", pager
+      else
+        $stdout.reopen(write)
+        $stderr.reopen(write) if $stderr.tty?
+        read.close
+        write.close
       end
     end
   end
@@ -223,11 +225,13 @@ module I3
     MESSAGE_TYPE_GET_WORKSPACES = 1
     MESSAGE_TYPE_SUBSCRIBE = 2
     MESSAGE_TYPE_GET_OUTPUTS = 3
+    MESSAGE_TYPE_GET_TREE = 4
 
     MESSAGE_REPLY_COMMAND = 0
     MESSAGE_REPLY_GET_WORKSPACES = 1
     MESSAGE_REPLY_SUBSCRIBE = 2
     MESSAGE_REPLY_GET_OUTPUTS = 3
+    MESSAGE_REPLY_GET_TREE = 4
 
     EVENT_MASK = (1 << 31)
     EVENT_WORKSPACE = (EVENT_MASK | 0)
@@ -257,6 +261,11 @@ module I3
     def get_outputs
       write format(MESSAGE_TYPE_GET_OUTPUTS)
       handle_response MESSAGE_TYPE_GET_OUTPUTS
+    end
+
+    def get_tree
+      write format(MESSAGE_TYPE_GET_TREE)
+      handle_response MESSAGE_TYPE_GET_TREE
     end
 
     def handle_response(type)
